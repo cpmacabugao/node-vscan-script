@@ -1,7 +1,7 @@
 # Security Check Script Guide
 
 ## Purpose
-`security-check.ps` scans the application workspace for dependencies impacted by Sonatype advisory `sonatype-2026-003429`, then generates an HTML report.
+`security-check.ps` scans the `web-applications` workspace for dependencies impacted by Sonatype advisory `sonatype-2026-003429`, then generates an HTML report.
 
 It checks:
 - Direct dependencies from `package.json`
@@ -29,25 +29,25 @@ No extra installs are required.
 
 ## Recommended Run Commands
 
-### Standard run (PowerShell terminal)
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\security-check.ps
-```
-
-### If `.ps1`/script execution is restricted by policy
-Run in-memory from `.ps`:
+### Standard run (works with `.ps`)
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Get-Content -Raw .\security-check.ps)))"
 ```
 
-### Run against a specific folder
+### Run against a specific folder (works with `.ps`)
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\security-check.ps -RootPath "C:\path\to\web-applications"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Get-Content -Raw .\security-check.ps)))" -RootPath "C:\Users\chris.macabugao\web-applications\mtsi-security-hub"
 ```
 
-### Custom report output path
+### Custom report output path (works with `.ps`)
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\security-check.ps -ReportPath "security-report-custom.html"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Get-Content -Raw .\security-check.ps)))" -ReportPath "C:\Users\chris.macabugao\web-applications\security-report-custom.html"
+```
+
+### Optional: run as `.ps1` (only if you rename/copy file)
+```powershell
+Copy-Item .\security-check.ps .\security-check.ps1 -Force
+powershell -NoProfile -ExecutionPolicy Bypass -File .\security-check.ps1
 ```
 
 ## Parameters
@@ -90,10 +90,9 @@ Action:
 - Confirm `package-lock.json` / `npm-shrinkwrap.json` files exist in the scanned root.
 - Re-run with explicit `-RootPath`.
 
-### Script blocked by policy
-Use the in-memory command:
+### `.ps` with arguments in one command (recommended pattern)
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Get-Content -Raw .\security-check.ps)))"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Get-Content -Raw .\security-check.ps))) -RootPath 'C:\Users\chris.macabugao\web-applications\mtsi-security-hub' -ReportPath 'C:\Users\chris.macabugao\web-applications\security-report-sonatype-2026-003429.html'"
 ```
 
 ## Team Usage Notes
