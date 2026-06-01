@@ -1,7 +1,7 @@
 # Security Check Script Guide
 
 ## Purpose
-`security-check.ps` scans the application workspace for dependencies impacted by Sonatype advisory `sonatype-2026-003429`, then generates an HTML report.
+`security-check.ps` scans the `web-applications` workspace for dependencies impacted by Sonatype advisory `sonatype-2026-003429`, then generates an HTML report.
 
 It checks:
 - Direct dependencies from `package.json`
@@ -10,6 +10,10 @@ It checks:
 
 ## Script Location
 - `security-check.ps`
+
+Important:
+- Run commands from the folder that contains `security-check.ps`, or use a full script path.
+- If you run from a different folder with a relative path, PowerShell may return `cannot find path` / `script does not exist`.
 
 ## Report Output
 Default output file:
@@ -34,14 +38,20 @@ No extra installs are required.
 powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Get-Content -Raw .\security-check.ps)))"
 ```
 
+### If running from another folder, use full script path
+```powershell
+$SCRIPT_PATH = "C:\path\to\security-check.ps"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Get-Content -Raw $SCRIPT_PATH)))"
+```
+
 ### Run against a specific folder (works with `.ps`)
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Get-Content -Raw .\security-check.ps)))" -RootPath "C:\Users\chris.macabugao\web-applications\mtsi-security-hub"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Get-Content -Raw .\security-check.ps)))" -RootPath "<ROOT_PATH>"
 ```
 
 ### Custom report output path (works with `.ps`)
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Get-Content -Raw .\security-check.ps)))" -ReportPath "C:\Users\chris.macabugao\web-applications\security-report-custom.html"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Get-Content -Raw .\security-check.ps)))" -ReportPath "<REPORT_PATH>"
 ```
 
 ### Optional: run as `.ps1` (only if you rename/copy file)
@@ -92,7 +102,14 @@ Action:
 
 ### `.ps` with arguments in one command (recommended pattern)
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Get-Content -Raw .\security-check.ps))) -RootPath 'C:\Users\chris.macabugao\web-applications\mtsi-security-hub' -ReportPath 'C:\Users\chris.macabugao\web-applications\security-report-sonatype-2026-003429.html'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Get-Content -Raw .\security-check.ps))) -RootPath '<ROOT_PATH>' -ReportPath '<REPORT_PATH>'"
+```
+
+### Team-safe variable pattern (recommended)
+```powershell
+$ROOT_PATH = "C:\path\to\your\repo-or-folder"
+$REPORT_PATH = "C:\path\to\output\security-report-sonatype-2026-003429.html"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Get-Content -Raw .\security-check.ps))) -RootPath '$ROOT_PATH' -ReportPath '$REPORT_PATH'"
 ```
 
 ## Team Usage Notes
