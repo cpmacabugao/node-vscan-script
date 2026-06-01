@@ -32,6 +32,7 @@ The report includes:
 No extra installs are required.
 
 ## Recommended Run Commands
+(Ensure to change the paths)
 
 ### Standard run (works with `.ps`)
 ```powershell
@@ -44,10 +45,6 @@ $SCRIPT_PATH = "C:\path\to\security-check.ps"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Get-Content -Raw $SCRIPT_PATH)))"
 ```
 
-### One-paste command (run from anywhere)
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Get-Content -Raw 'C:\path\to\security-check.ps'))) -RootPath 'C:\path\to\repo-or-folder' -ReportPath 'C:\path\to\output\security-report-sonatype-2026-003429.html'"
-```
 
 ### Run against a specific folder (works with `.ps`)
 ```powershell
@@ -57,6 +54,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create
 ### Custom report output path (works with `.ps`)
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Get-Content -Raw .\security-check.ps)))" -ReportPath "<REPORT_PATH>"
+```
+
+### One-paste command (run from anywhere)
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Get-Content -Raw 'C:\path\to\security-check.ps'))) -RootPath 'C:\path\to\repo-or-folder' -ReportPath 'C:\path\to\output\security-report-sonatype-2026-003429.html'"
 ```
 
 ### Optional: run as `.ps1` (only if you rename/copy file)
