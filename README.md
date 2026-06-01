@@ -1,7 +1,7 @@
 # Security Check Script Guide
 
 ## Purpose
-`security-check.ps` scans the application workspace for dependencies impacted by Sonatype advisory `sonatype-2026-003429`, then generates an HTML report.
+`security-check.ps` scans the `web-applications` workspace for dependencies impacted by Sonatype advisory `sonatype-2026-003429`, then generates an HTML report.
 
 It checks:
 - Direct dependencies from `package.json`
@@ -42,6 +42,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create
 ```powershell
 $SCRIPT_PATH = "C:\path\to\security-check.ps"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Get-Content -Raw $SCRIPT_PATH)))"
+```
+
+### One-paste command (run from anywhere)
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Get-Content -Raw 'C:\path\to\security-check.ps'))) -RootPath 'C:\path\to\repo-or-folder' -ReportPath 'C:\path\to\output\security-report-sonatype-2026-003429.html'"
 ```
 
 ### Run against a specific folder (works with `.ps`)
