@@ -1,0 +1,318 @@
+param(
+    [string]$RootPath = $PSScriptRoot,
+    [string]$AdvisoryId = "sonatype-2026-003429",
+    [string]$AdvisoryUrl = "https://guide.sonatype.com/vulnerability/sonatype-2026-003429/components-impacted",
+    [string]$ReportPath = "security-report-sonatype-2026-003429.html"
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# Fallback mechanism if executed via an unsaved script block/ISE memory stream
+if ([string]::IsNullOrWhiteSpace($RootPath)) {
+    $RootPath = "."
+}
+
+function Parse-ImpactedComponentsFromHtml {
+    param([string]$Html)
+    $found = @()
+    foreach ($m in [regex]::Matches($Html, "/component/npm/([^/]+)/([^/\""<\s?]+)")) {
+        $name = [System.Uri]::UnescapeDataString($m.Groups[1].Value).ToLowerInvariant()
+        $version = [System.Uri]::UnescapeDataString($m.Groups[2].Value).ToLowerInvariant()
+        if ($name -and $version) {
+            $found += [pscustomobject]@{ Name = $name; Version = $version }
+        }
+    }
+    $found
+}
+
+function Get-ImpactedComponentsFromSonatype {
+    param([string]$Advisory, [string]$PrimaryUrl)
+    $base = "https://guide.sonatype.com/vulnerability/$Advisory/components-impacted"
+    $targets = @($PrimaryUrl, $base)
+    $result = @()
+    $seen = New-Object System.Collections.Generic.HashSet[string]
+
+    foreach ($target in $targets) {
+        try {
+            $html = (Invoke-WebRequest -Uri $target -UseBasicParsing -TimeoutSec 60).Content
+            foreach ($c in Parse-ImpactedComponentsFromHtml -Html $html) {
+                $k = "$($c.Name)|$($c.Version)"
+                if ($seen.Add($k)) { $result += $c }
+            }
+        } catch {
+            Write-Warning "Could not read $target : $($_.Exception.Message)"
+        }
+    }
+
+    for ($offset = 50; $offset -le 1000; $offset += 50) {
+        $u = "${base}?offset=$offset"
+        try {
+            $html = (Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 60).Content
+            $added = 0
+            foreach ($c in Parse-ImpactedComponentsFromHtml -Html $html) {
+                $k = "$($c.Name)|$($c.Version)"
+                if ($seen.Add($k)) { $result += $c; $added++ }
+            }
+            if ($added -eq 0) { break }
+        } catch { break }
+    }
+    $result
+}
+
+function Get-ManifestDependencies {
+    param([string]$Root)
+    $files = Get-ChildItem -Path $Root -Filter "package.json" -Recurse -File |
+        Where-Object { $_.FullName -notmatch "\\node_modules\\" }
+    $all = @()
+    foreach ($file in $files) {
+        try { $json = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json } catch { continue }
+        foreach ($section in @("dependencies","devDependencies","peerDependencies","optionalDependencies")) {
+            $prop = $json.PSObject.Properties | Where-Object { $_.Name -eq $section } | Select-Object -First 1
+            $block = if ($prop) { $prop.Value } else { $null }
+            if ($null -eq $block) { continue }
+            foreach ($dep in $block.PSObject.Properties) {
+                $all += [pscustomobject]@{
+                    Source = "manifest"
+                    File = $file.FullName
+                    Project = if ($json.name) { [string]$json.name } else { Split-Path $file.DirectoryName -Leaf }
+                    Name = $dep.Name.ToLowerInvariant()
+                    Version = [string]$dep.Value
+                    Section = $section
+                }
+            }
+        }
+    }
+    $all
+}
+
+function Add-LockTreeDependencies {
+    param(
+        [object]$Dependencies,
+        [string]$FilePath,
+        [string]$ProjectName,
+        [string]$Prefix,
+        [System.Collections.Generic.HashSet[string]]$Seen,
+        [System.Collections.Generic.List[object]]$Out
+    )
+    if ($null -eq $Dependencies) { return }
+    foreach ($prop in $Dependencies.PSObject.Properties) {
+        $name = "$Prefix$($prop.Name)".ToLowerInvariant()
+        $node = $prop.Value
+        $verProp = $node.PSObject.Properties | Where-Object { $_.Name -eq "version" } | Select-Object -First 1
+        $version = if ($verProp) { [string]$verProp.Value } else { "" }
+        $key = "$FilePath|$name|$version"
+        if ($Seen.Add($key)) {
+            $Out.Add([pscustomobject]@{
+                Source = "lockfile"
+                File = $FilePath
+                Project = $ProjectName
+                Name = $name
+                Version = $version
+                Section = "resolved"
+            })
+        }
+        $depsProp = $node.PSObject.Properties | Where-Object { $_.Name -eq "dependencies" } | Select-Object -First 1
+        if ($depsProp) {
+            Add-LockTreeDependencies -Dependencies $depsProp.Value -FilePath $FilePath -ProjectName $ProjectName -Prefix "" -Seen $Seen -Out $Out
+        }
+    }
+}
+
+function Get-LockfileDependencies {
+    param([string]$Root)
+    $files = @(
+        Get-ChildItem -Path $Root -Recurse -File -Filter "package-lock.json"
+        Get-ChildItem -Path $Root -Recurse -File -Filter "npm-shrinkwrap.json"
+    ) | Where-Object { $_.FullName -notmatch "\\node_modules\\" }
+    $out = New-Object System.Collections.Generic.List[object]
+    $seen = New-Object System.Collections.Generic.HashSet[string]
+    Add-Type -AssemblyName System.Web.Extensions
+    $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+    $serializer.MaxJsonLength = [int]::MaxValue
+    function Test-HasKey {
+        param($Map, [string]$Key)
+        try { if ($Map.ContainsKey($Key)) { return $true } } catch {}
+        try { if ($Map.Contains($Key)) { return $true } } catch {}
+        return $false
+    }
+
+    function Add-LockTreeDependenciesMap {
+        param(
+            [System.Collections.IDictionary]$Dependencies,
+            [string]$FilePath,
+            [string]$ProjectName,
+            [System.Collections.Generic.HashSet[string]]$SeenMap,
+            [System.Collections.Generic.List[object]]$OutMap
+        )
+        foreach ($entry in $Dependencies.GetEnumerator()) {
+            $name = ([string]$entry.Key).ToLowerInvariant()
+            $node = $entry.Value
+            if (-not ($node -is [System.Collections.IDictionary])) { continue }
+            $version = if (Test-HasKey -Map $node -Key "version") { [string]$node["version"] } else { "" }
+            $k = "$FilePath|$name|$version"
+            if ($SeenMap.Add($k)) {
+                $OutMap.Add([pscustomobject]@{
+                    Source = "lockfile"
+                    File = $FilePath
+                    Project = $ProjectName
+                    Name = $name
+                    Version = $version
+                    Section = "resolved"
+                })
+            }
+            if ((Test-HasKey -Map $node -Key "dependencies") -and $node["dependencies"] -is [System.Collections.IDictionary]) {
+                Add-LockTreeDependenciesMap -Dependencies $node["dependencies"] -FilePath $FilePath -ProjectName $ProjectName -SeenMap $SeenMap -OutMap $OutMap
+            }
+        }
+    }
+
+    foreach ($file in $files) {
+        try {
+            $raw = Get-Content -LiteralPath $file.FullName -Raw
+            $json = $serializer.DeserializeObject($raw)
+        } catch { continue }
+        if (-not ($json -is [System.Collections.IDictionary])) { continue }
+        $project = Split-Path $file.DirectoryName -Leaf
+
+        if ((Test-HasKey -Map $json -Key "packages") -and $json["packages"] -is [System.Collections.IDictionary]) {
+            foreach ($p in $json["packages"].GetEnumerator()) {
+                $pathKey = [string]$p.Key
+                $pathKeyNorm = $pathKey -replace '\\', '/'
+                if ($pathKeyNorm -notmatch "node_modules/") { continue }
+                $pkgName = ($pathKeyNorm -replace "^.*node_modules/","").ToLowerInvariant()
+                $pkgObj = $p.Value
+                if (-not ($pkgObj -is [System.Collections.IDictionary])) { continue }
+                $version = if (Test-HasKey -Map $pkgObj -Key "version") { [string]$pkgObj["version"] } else { "" }
+                $key = "$($file.FullName)|$pkgName|$version"
+                if ($seen.Add($key)) {
+                    $out.Add([pscustomobject]@{
+                        Source = "lockfile"
+                        File = $file.FullName
+                        Project = $project
+                        Name = $pkgName
+                        Version = $version
+                        Section = "resolved"
+                    })
+                }
+            }
+        }
+
+        if ((Test-HasKey -Map $json -Key "dependencies") -and $json["dependencies"] -is [System.Collections.IDictionary]) {
+            Add-LockTreeDependenciesMap -Dependencies $json["dependencies"] -FilePath $file.FullName -ProjectName $project -SeenMap $seen -OutMap $out
+        }
+    }
+    $out.ToArray()
+}
+
+$resolvedRoot = (Resolve-Path -Path $RootPath).Path
+$reportFullPath = [System.IO.Path]::GetFullPath((Join-Path $resolvedRoot $ReportPath))
+
+$impactedComponents = Get-ImpactedComponentsFromSonatype -Advisory $AdvisoryId -PrimaryUrl $AdvisoryUrl
+$impactedComponents = @($impactedComponents | Sort-Object Name, Version -Unique)
+
+$impactByName = @{}
+foreach ($c in $impactedComponents) {
+    if (-not $impactByName.ContainsKey($c.Name)) {
+        $impactByName[$c.Name] = New-Object System.Collections.Generic.HashSet[string]
+    }
+    [void]$impactByName[$c.Name].Add($c.Version)
+}
+
+$manifestDeps = @(Get-ManifestDependencies -Root $resolvedRoot)
+$lockDeps = @(Get-LockfileDependencies -Root $resolvedRoot)
+$allDeps = @($manifestDeps + $lockDeps)
+
+$matches = @(
+    $allDeps | Where-Object { $impactByName.ContainsKey($_.Name) } | ForEach-Object {
+        $impactedVersions = @($impactByName[$_.Name])
+        $exact = $false
+        foreach ($v in $impactedVersions) {
+            if ($_.Version -and ($_.Version.ToLowerInvariant() -eq $v.ToLowerInvariant())) { $exact = $true; break }
+        }
+        [pscustomobject]@{
+            Source = $_.Source
+            Project = $_.Project
+            File = $_.File
+            Dependency = $_.Name
+            FoundVersion = $_.Version
+            ImpactedVersions = ($impactedVersions -join ", ")
+            ExactVersionMatch = $exact
+            Section = $_.Section
+        }
+    } | Sort-Object Source, Project, Dependency
+)
+
+$summary = [pscustomobject]@{
+    ScanTimeUtc = (Get-Date).ToUniversalTime().ToString("u")
+    RootPath = $resolvedRoot
+    AdvisoryId = $AdvisoryId
+    ImpactedPackageCount = (@($impactedComponents | Select-Object -ExpandProperty Name -Unique)).Count
+    ImpactedComponentCount = $impactedComponents.Count
+    PackageJsonFilesScanned = (@($manifestDeps | Select-Object -ExpandProperty File -Unique)).Count
+    LockfilesScanned = (@($lockDeps | Select-Object -ExpandProperty File -Unique)).Count
+    ManifestDependenciesScanned = $manifestDeps.Count
+    ResolvedDependenciesScanned = $lockDeps.Count
+    MatchesFound = $matches.Count
+    ExactVersionMatches = (@($matches | Where-Object { $_.ExactVersionMatch })).Count
+}
+
+$css = @"
+body { font-family: Segoe UI, Arial, sans-serif; margin: 24px; background: #f7f9fc; color: #1d2a3a; }
+.card { background: #fff; border: 1px solid #dbe3ef; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+.ok { color: #0a7f34; font-weight: 700; } .warn { color: #b3261e; font-weight: 700; }
+table { width: 100%; border-collapse: collapse; background: #fff; }
+th, td { border: 1px solid #dbe3ef; padding: 8px; font-size: 13px; text-align: left; vertical-align: top; }
+th { background: #eef3fb; } code { background: #eef3fb; padding: 1px 4px; border-radius: 4px; }
+"@
+
+$summaryRows = @"
+<tr><th>Scan Time (UTC)</th><td>$($summary.ScanTimeUtc)</td></tr>
+<tr><th>Root Path</th><td><code>$($summary.RootPath)</code></td></tr>
+<tr><th>Advisory</th><td><a href="$AdvisoryUrl">$AdvisoryId</a></td></tr>
+<tr><th>Impacted Packages Loaded</th><td>$($summary.ImpactedPackageCount)</td></tr>
+<tr><th>Impacted Components Loaded</th><td>$($summary.ImpactedComponentCount)</td></tr>
+<tr><th>package.json Files Scanned</th><td>$($summary.PackageJsonFilesScanned)</td></tr>
+<tr><th>Lockfiles Scanned</th><td>$($summary.LockfilesScanned)</td></tr>
+<tr><th>Manifest Dependencies Scanned</th><td>$($summary.ManifestDependenciesScanned)</td></tr>
+<tr><th>Resolved Dependencies Scanned</th><td>$($summary.ResolvedDependenciesScanned)</td></tr>
+<tr><th>Matches Found</th><td>$($summary.MatchesFound)</td></tr>
+<tr><th>Exact Version Matches</th><td>$($summary.ExactVersionMatches)</td></tr>
+"@
+
+$matchRows = if ($matches.Count -eq 0) {
+    "<tr><td colspan='8' class='ok'>No impacted dependencies detected in manifests or scanned lockfiles.</td></tr>"
+} else {
+    ($matches | ForEach-Object {
+        $exactText = if ($_.ExactVersionMatch) { "<span class='warn'>YES</span>" } else { "No (name-only hit)" }
+        "<tr><td>$($_.Source)</td><td>$($_.Project)</td><td><code>$($_.File)</code></td><td><code>$($_.Dependency)</code></td><td><code>$($_.FoundVersion)</code></td><td><code>$($_.ImpactedVersions)</code></td><td>$exactText</td><td>$($_.Section)</td></tr>"
+    }) -join "`n"
+}
+
+$impactedRows = if ($impactedComponents.Count -eq 0) {
+    "<tr><td class='warn'>No impacted components were loaded.</td><td class='warn'>n/a</td></tr>"
+} else {
+    ($impactedComponents | Sort-Object Name, Version | ForEach-Object {
+        "<tr><td><code>$($_.Name)</code></td><td><code>$($_.Version)</code></td></tr>"
+    }) -join "`n"
+}
+
+$html = @"
+<!doctype html><html><head><meta charset="utf-8" /><title>Security Report - $AdvisoryId</title><style>$css</style></head>
+<body>
+<h1>Security Report: $AdvisoryId</h1>
+<div class="card"><table>$summaryRows</table></div>
+<div class="card"><h2>Detected Matches (Manifest + Lockfile)</h2><table>
+<tr><th>Source</th><th>Project</th><th>File</th><th>Dependency</th><th>Found Version</th><th>Impacted Versions</th><th>Exact Match</th><th>Section</th></tr>
+$matchRows
+</table></div>
+<div class="card"><h2>Advisory Impacted Components</h2><table>
+<tr><th>Package</th><th>Version</th></tr>
+$impactedRows
+</table></div>
+</body></html>
+"@
+
+$html | Set-Content -LiteralPath $reportFullPath -Encoding UTF8
+Write-Host "Report generated: $reportFullPath"
