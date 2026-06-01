@@ -1,7 +1,7 @@
 # Security Check Script Guide
 
 ## Purpose
-`security-check.ps` scans the `web-applications` workspace for dependencies impacted by Sonatype advisory `sonatype-2026-003429`, then generates an HTML report.
+`security-check.ps` scans the application workspace for dependencies impacted by Sonatype advisory `sonatype-2026-003429`, then generates an HTML report.
 
 It checks:
 - Direct dependencies from `package.json`
